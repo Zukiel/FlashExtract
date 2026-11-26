@@ -5,4 +5,3 @@ project name should be
 
 dont forget to do 
 > flutter pub add provider
-
