@@ -3,6 +3,8 @@ import '../models/deck.dart';
 import '../models/flashcard.dart';
 import '../models/question_answer.dart';
 import '../services/spaced_repetition_service.dart';
+import '../services/document_parser/pdf_extraction_service.dart';
+import '../services/document_parser/parsed_document.dart';
 
 enum ExtractionState { idle, extracting, success, error }
 
@@ -21,44 +23,51 @@ class FlashcardController extends ChangeNotifier {
 
   /// Handles PDF/Slide document processing asynchronously without blocking UI
   Future<void> extractAndCreateDeck({
-    required String filePath,
-    required String deckTitle,
-  }) async {
-    _state = ExtractionState.extracting;
-    _errorMessage = null;
-    notifyListeners();
+  required Uint8List fileBytes,
+  required String fileName,
+  required String deckTitle,
+}) async {
+  _state = ExtractionState.extracting;
+  _errorMessage = null;
+  notifyListeners();
 
-    try {
-      // Simulate asynchronous document parsing & AI Q&A generation
-      List<QuestionAnswer> qaPairs = await _parseDocumentAsync(filePath);
+  try {
+    // 1. YOUR LAYER (Khrist): Extract & clean text (or flag for Vision fallback)
+    final ParsedDocument parsedDoc = await PdfExtractionService().extractFromBytes(
+      fileBytes,
+      fileName,
+    );
 
-      // Convert Q&A items to Flashcard models
-      List<Flashcard> generatedCards = qaPairs.map((qa) {
-        return Flashcard(
-          id: DateTime.now().microsecondsSinceEpoch.toString() + qa.id,
-          question: qa.question,
-          answer: qa.answer,
-        );
-      }).toList();
+    // 2. GAB'S LAYER (AI): Generate Q&A pairs from chunks OR rawBytes (if image-heavy)
+    // Until Gab's API is live, keep using mock data or wire it here:
+    final List<QuestionAnswer> qaPairs = await _generateQaFromParsedDoc(parsedDoc, fileBytes);
 
-      // Create new deck and add to system
-      Deck newDeck = Deck(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
-        title: deckTitle,
-        sourceFileName: filePath.split('/').last,
-        cards: generatedCards,
+    // 3. LANCE'S LAYER: Map to Flashcard models
+    final List<Flashcard> generatedCards = qaPairs.map((qa) {
+      return Flashcard(
+        id: '${DateTime.now().microsecondsSinceEpoch}_${qa.id}',
+        question: qa.question,
+        answer: qa.answer,
       );
+    }).toList();
 
-      _decks.add(newDeck);
-      _activeDeck = newDeck;
-      _state = ExtractionState.success;
-    } catch (e) {
-      _state = ExtractionState.error;
-      _errorMessage = 'Failed to extract text from document: ${e.toString()}';
-    } finally {
-      notifyListeners();
-    }
+    final Deck newDeck = Deck(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      title: deckTitle,
+      sourceFileName: fileName,
+      cards: generatedCards,
+    );
+
+    _decks.add(newDeck);
+    _activeDeck = newDeck;
+    _state = ExtractionState.success;
+  } catch (e) {
+    _state = ExtractionState.error;
+    _errorMessage = 'Failed to process document: ${e.toString()}';
+  } finally {
+    notifyListeners();
   }
+}
 
   /// Evaluates card response using Spaced Repetition logic
   void answerCard(Flashcard card, int rating) {
@@ -93,3 +102,41 @@ class FlashcardController extends ChangeNotifier {
     ];
   }
 }
+
+/// Bridge between Khrist's ParsedDocument and Gab's AI Service.
+  /// Currently generates mock Q&As from the extracted text so the app compiles
+  /// and runs end-to-end before Gab's Gemini API is connected.
+  Future<List<QuestionAnswer>> _generateQaFromParsedDoc(
+    ParsedDocument parsedDoc,
+    Uint8List fileBytes,
+  ) async {
+    // TODO (Gab): Replace this block with your Gemini API service call:
+    // return await AiService().generateFlashcards(parsedDoc, fileBytes);
+
+    await Future.delayed(const Duration(milliseconds: 500));
+
+    if (parsedDoc.requiresVisionFallback) {
+      return [
+        QuestionAnswer(
+          id: '1',
+          question: 'Vision Fallback Triggered (${parsedDoc.fileName})',
+          answer:
+              'This PDF has ${parsedDoc.pageCount} pages with minimal selectable text. '
+              'Ready to send raw bytes to Gemini 1.5 Flash multimodal.',
+        ),
+      ];
+    }
+
+    // Generate preview cards from your actual extracted & chunked text
+    return List.generate(parsedDoc.chunks.length, (index) {
+      final preview = parsedDoc.chunks[index].length > 120
+          ? '${parsedDoc.chunks[index].substring(0, 120)}...'
+          : parsedDoc.chunks[index];
+
+      return QuestionAnswer(
+        id: '${index + 1}',
+        question: 'Extracted Chunk ${index + 1} (${parsedDoc.fileName})',
+        answer: preview,
+      );
+    });
+  }
